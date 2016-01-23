@@ -23,7 +23,6 @@
 #include <stdint.h>
 #include <termios.h>
 #include <sys/mman.h>
-#include <linux/fb.h>
 #include <sys/ioctl.h>
 #include <getopt.h>
 #include <string.h>
@@ -516,7 +515,6 @@ int main(int argc, char *argv[])
   FORMAT_3D_T           m_3d                  = CONF_FLAGS_FORMAT_NONE;
   bool                  m_refresh             = false;
   double                startpts              = 0;
-  CRect                 SrcRect               = {0,0,0,0};
   bool                  m_blank_background    = false;
   bool sentStarted = false;
   float m_threshold      = -1.0f; // amount of audio/video required to come out of buffering
@@ -562,6 +560,9 @@ int main(int argc, char *argv[])
   const int native_deinterlace_opt = 0x20e;
   const int display_opt     = 0x20f;
   const int alpha_opt       = 0x210;
+  const int advanced_opt    = 0x211;
+  const int aspect_mode_opt = 0x212;
+  const int crop_opt        = 0x213;
   const int http_cookie_opt = 0x300;
   const int http_user_agent_opt = 0x301;
 
@@ -581,6 +582,7 @@ int main(int argc, char *argv[])
     { "nodeinterlace",no_argument,        NULL,          no_deinterlace_opt },
     { "nativedeinterlace",no_argument,    NULL,          native_deinterlace_opt },
     { "anaglyph",     required_argument,  NULL,          anaglyph_opt },
+    { "advanced",     no_argument,        NULL,          advanced_opt },
     { "hw",           no_argument,        NULL,          'w' },
     { "3d",           required_argument,  NULL,          '3' },
     { "allow-mvc",    no_argument,        NULL,          'M' },
@@ -599,6 +601,8 @@ int main(int argc, char *argv[])
     { "subtitles",    required_argument,  NULL,          subtitles_opt },
     { "lines",        required_argument,  NULL,          lines_opt },
     { "win",          required_argument,  NULL,          pos_opt },
+    { "crop",         required_argument,  NULL,          crop_opt },
+    { "aspect-mode",  required_argument,  NULL,          aspect_mode_opt },
     { "audio_fifo",   required_argument,  NULL,          audio_fifo_opt },
     { "video_fifo",   required_argument,  NULL,          video_fifo_opt },
     { "audio_queue",  required_argument,  NULL,          audio_queue_opt },
@@ -683,6 +687,9 @@ int main(int argc, char *argv[])
       case anaglyph_opt:
         m_config_video.anaglyph = (OMX_IMAGEFILTERANAGLYPHTYPE)atoi(optarg);
         break;
+      case advanced_opt:
+        m_config_video.advanced_hd_deinterlace = true;
+        break;
       case 'w':
         m_config_audio.hwdecode = true;
         break;
@@ -696,8 +703,8 @@ int main(int argc, char *argv[])
         m_config_audio.device = optarg;
         if(m_config_audio.device != "local" && m_config_audio.device != "hdmi" && m_config_audio.device != "both")
         {
-          print_usage();
-          return 0;
+          printf("Bad argument for -%c: Output device must be `local', `hdmi' or `both'\n", c);
+          return EXIT_FAILURE;
         }
         m_config_audio.device = "omx:" + m_config_audio.device;
         break;
@@ -770,6 +777,22 @@ int main(int argc, char *argv[])
         sscanf(optarg, "%f %f %f %f", &m_config_video.dst_rect.x1, &m_config_video.dst_rect.y1, &m_config_video.dst_rect.x2, &m_config_video.dst_rect.y2) == 4 ||
         sscanf(optarg, "%f,%f,%f,%f", &m_config_video.dst_rect.x1, &m_config_video.dst_rect.y1, &m_config_video.dst_rect.x2, &m_config_video.dst_rect.y2);
         break;
+      case crop_opt:
+        sscanf(optarg, "%f %f %f %f", &m_config_video.src_rect.x1, &m_config_video.src_rect.y1, &m_config_video.src_rect.x2, &m_config_video.src_rect.y2) == 4 ||
+        sscanf(optarg, "%f,%f,%f,%f", &m_config_video.src_rect.x1, &m_config_video.src_rect.y1, &m_config_video.src_rect.x2, &m_config_video.src_rect.y2);
+        break;
+      case aspect_mode_opt:
+        if (optarg) {
+          if (!strcasecmp(optarg, "letterbox"))
+            m_config_video.aspectMode = 1;
+          else if (!strcasecmp(optarg, "fill"))
+            m_config_video.aspectMode = 2;
+          else if (!strcasecmp(optarg, "stretch"))
+            m_config_video.aspectMode = 3;
+          else
+            m_config_video.aspectMode = 0;
+        }
+        break;
       case vol_opt:
 	m_Volume = atoi(optarg);
         break;
@@ -821,8 +844,9 @@ int main(int argc, char *argv[])
           }
         if (i == sizeof layouts/sizeof *layouts)
         {
+          printf("Wrong layout specified: %s\n", optarg);
           print_usage();
-          return 0;
+          return EXIT_FAILURE;
         }
         break;
       }
@@ -859,21 +883,21 @@ int main(int argc, char *argv[])
         break;
       case 'h':
         print_usage();
-        return 0;
+        return EXIT_SUCCESS;
         break;
       case 'v':
         print_version();
-        return 0;
+        return EXIT_SUCCESS;
         break;
       case 'k':
         print_keybindings();
-        return 0;
+        return EXIT_SUCCESS;
         break;
       case ':':
-        return 0;
+        return EXIT_FAILURE;
         break;
       default:
-        return 0;
+        return EXIT_FAILURE;
         break;
     }
   }
@@ -895,25 +919,25 @@ int main(int argc, char *argv[])
   if(!filename_is_URL && !IsPipe(m_filename) && !Exists(m_filename))
   {
     PrintFileNotFound(m_filename);
-    return 0;
+    return EXIT_FAILURE;
   }
 
   if(m_asked_for_font && !Exists(m_font_path))
   {
     PrintFileNotFound(m_font_path);
-    return 0;
+    return EXIT_FAILURE;
   }
 
   if(m_asked_for_italic_font && !Exists(m_italic_font_path))
   {
     PrintFileNotFound(m_italic_font_path);
-    return 0;
+    return EXIT_FAILURE;
   }
 
   if(m_has_external_subtitles && !Exists(m_external_subtitles_path))
   {
     PrintFileNotFound(m_external_subtitles_path);
-    return 0;
+    return EXIT_FAILURE;
   }
 
   if(!m_has_external_subtitles && !filename_is_URL)
@@ -1410,7 +1434,11 @@ int main(int argc, char *argv[])
         break;
       case KeyConfig::ACTION_MOVE_VIDEO:
         sscanf(result.getWinArg(), "%f %f %f %f", &m_config_video.dst_rect.x1, &m_config_video.dst_rect.y1, &m_config_video.dst_rect.x2, &m_config_video.dst_rect.y2);
-        m_player_video.SetVideoRect(SrcRect,m_config_video.dst_rect);
+        m_player_video.SetVideoRect(m_config_video.src_rect, m_config_video.dst_rect);
+        break;
+      case KeyConfig::ACTION_CROP_VIDEO:
+        sscanf(result.getWinArg(), "%f %f %f %f", &m_config_video.src_rect.x1, &m_config_video.src_rect.y1, &m_config_video.src_rect.x2, &m_config_video.src_rect.y2);
+        m_player_video.SetVideoRect(m_config_video.src_rect, m_config_video.dst_rect);
         break;
       case KeyConfig::ACTION_HIDE_VIDEO:
         // set alpha to minimum
@@ -1419,6 +1447,19 @@ int main(int argc, char *argv[])
       case KeyConfig::ACTION_UNHIDE_VIDEO:
         // set alpha to maximum
         m_player_video.SetAlpha(255);
+        break;
+      case KeyConfig::ACTION_SET_ASPECT_MODE:
+        if (result.getWinArg()) {
+          if (!strcasecmp(result.getWinArg(), "letterbox"))
+            m_config_video.aspectMode = 1;
+          else if (!strcasecmp(result.getWinArg(), "fill"))
+            m_config_video.aspectMode = 2;
+          else if (!strcasecmp(result.getWinArg(), "stretch"))
+            m_config_video.aspectMode = 3;
+          else
+            m_config_video.aspectMode = 0;
+          m_player_video.SetVideoRect(m_config_video.aspectMode);
+        }
         break;
       case KeyConfig::ACTION_DECREASE_VOLUME:
         m_Volume -= 300;
@@ -1672,11 +1713,6 @@ int main(int argc, char *argv[])
         OMXClock::OMXSleep(10);
         continue;
       }
-      if (m_loop)
-      {
-        m_incr = m_loop_from - (m_av_clock->OMXMediaTime() ? m_av_clock->OMXMediaTime() / DVD_TIME_BASE : last_seek_pos);
-        continue;
-      }
       if (!m_send_eos && m_has_video)
         m_player_video.SubmitEOS();
       if (!m_send_eos && m_has_audio)
@@ -1688,6 +1724,13 @@ int main(int argc, char *argv[])
         OMXClock::OMXSleep(10);
         continue;
       }
+
+      if (m_loop)
+      {
+        m_incr = m_loop_from - (m_av_clock->OMXMediaTime() ? m_av_clock->OMXMediaTime() / DVD_TIME_BASE : last_seek_pos);
+        continue;
+      }
+
       break;
     }
 
